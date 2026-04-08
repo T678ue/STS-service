@@ -1,0 +1,36 @@
+{
+  "transport": {
+    "ws_host": "0.0.0.0",
+    "ws_port": 8765,
+    "grpc_host": "0.0.0.0",
+    "grpc_port": 50051,
+    "enable_websocket": true,
+    "enable_grpc": true
+  },
+  "audio": {
+    "internal_sample_rate": 16000,
+    "internal_channels": 1,
+    "vad_model_path": null
+  },
+  "stt": {
+    "default_engine": "faster-whisper",
+    "faster_whisper_model": "base.en",
+    "faster_whisper_device": "auto",
+    "faster_whisper_compute_type": "int8"
+  },
+  "tts": {
+    "default_engine": "piper",
+    "piper_model": "en_US-lessac-medium",
+    "piper_data_dir": "~/.cache/sts/piper-models"
+  },
+  "observability": {
+    "log_level": "INFO",
+    "log_format": "json",
+    "metrics_port": 9090,
+    "enable_metrics": true,
+    "enable_tracing": false,
+    "otlp_endpoint": "http://localhost:4317"
+  },
+  "max_sessions": 64,
+  "session_idle_timeout_s": 300.0
+}

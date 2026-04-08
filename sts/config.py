@@ -38,7 +38,7 @@ class STTConfig(BaseModel):
 class TTSConfig(BaseModel):
     default_engine: str = "piper"
     piper_model: str = "en_US-lessac-medium"
-    piper_data_dir: Path = Path("/var/lib/sts/piper-models")
+    piper_data_dir: Path = Path.home() / ".cache" / "sts" / "piper-models"
 
 
 class ObservabilityConfig(BaseModel):

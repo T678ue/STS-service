@@ -53,8 +53,9 @@ EXPOSE 8765 50051 9090
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9090/')" || exit 1
 
-# Default config via env vars (override at runtime)
+# Container-specific paths and config
 ENV STS_CONFIG_PATH=""
 ENV PYTHONUNBUFFERED=1
 
-ENTRYPOINT ["python", "-m", "sts"]
+# Override default model path for container layout
+ENTRYPOINT ["python", "-m", "sts", "--tts-data-dir", "/var/lib/sts/piper-models"]

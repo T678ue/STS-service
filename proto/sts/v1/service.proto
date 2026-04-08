@@ -1,0 +1,171 @@
+syntax = "proto3";
+
+package sts.v1;
+
+option go_package = "sts/v1;stsv1";
+
+// ---------------------------------------------------------------------------
+// Session management
+// ---------------------------------------------------------------------------
+
+service SessionService {
+  rpc CreateSession(CreateSessionRequest) returns (SessionInfo);
+  rpc UpdateSession(UpdateSessionRequest) returns (SessionInfo);
+  rpc DestroySession(DestroySessionRequest) returns (Empty);
+  rpc GetSession(GetSessionRequest) returns (SessionInfo);
+}
+
+// ---------------------------------------------------------------------------
+// Speech-to-Text
+// ---------------------------------------------------------------------------
+
+service SpeechToText {
+  // Bidirectional streaming: client sends audio chunks, server sends
+  // transcription results (partial + final) as they become available.
+  rpc StreamingRecognize(stream AudioChunk) returns (stream TranscriptionResult);
+}
+
+// ---------------------------------------------------------------------------
+// Text-to-Speech
+// ---------------------------------------------------------------------------
+
+service TextToSpeech {
+  // Server streaming: client sends text, server streams synthesized audio.
+  rpc Synthesize(SynthesisRequest) returns (stream AudioChunk);
+
+  // Bidirectional streaming: client streams text fragments (e.g. from
+  // an LLM), server streams audio as each fragment is synthesised.
+  rpc StreamingSynthesize(stream TextChunk) returns (stream AudioChunk);
+}
+
+// ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+message Empty {}
+
+// -- Session ---------------------------------------------------------------
+
+enum SessionMode {
+  SESSION_MODE_UNSPECIFIED = 0;
+  SESSION_MODE_STT = 1;
+  SESSION_MODE_TTS = 2;
+  SESSION_MODE_DUPLEX = 3;
+}
+
+enum AudioFormat {
+  AUDIO_FORMAT_UNSPECIFIED = 0;
+  AUDIO_FORMAT_PCM_S16LE = 1;
+  AUDIO_FORMAT_PCM_F32LE = 2;
+  AUDIO_FORMAT_WAV = 3;
+  AUDIO_FORMAT_OGG_OPUS = 4;
+  AUDIO_FORMAT_FLAC = 5;
+  AUDIO_FORMAT_MP3 = 6;
+}
+
+message VADConfig {
+  bool enabled = 1;
+  float threshold = 2;
+  int32 min_speech_ms = 3;
+  int32 min_silence_ms = 4;
+  int32 padding_ms = 5;
+  float max_speech_s = 6;
+}
+
+message STTConfig {
+  string engine = 1;
+  string model = 2;
+  string language = 3;
+  int32 beam_size = 4;
+  bool enable_partials = 5;
+}
+
+message TTSConfig {
+  string engine = 1;
+  string voice = 2;
+  float speed = 3;
+  AudioFormat output_format = 4;
+  int32 output_sample_rate = 5;
+  int32 output_channels = 6;
+}
+
+message SessionConfig {
+  AudioFormat input_format = 1;
+  int32 input_sample_rate = 2;
+  int32 input_channels = 3;
+  VADConfig vad = 4;
+  STTConfig stt = 5;
+  TTSConfig tts = 6;
+  string client_name = 7;
+  string client_version = 8;
+}
+
+message CreateSessionRequest {
+  SessionConfig config = 1;
+  SessionMode mode = 2;
+}
+
+message UpdateSessionRequest {
+  string session_id = 1;
+  SessionConfig config = 2;
+}
+
+message DestroySessionRequest {
+  string session_id = 1;
+}
+
+message GetSessionRequest {
+  string session_id = 1;
+}
+
+message SessionInfo {
+  string session_id = 1;
+  SessionConfig config = 2;
+  SessionMode mode = 3;
+  int64 audio_bytes_received = 4;
+  int64 audio_bytes_sent = 5;
+  int32 utterances_transcribed = 6;
+  int32 config_version = 7;
+}
+
+// -- Audio -----------------------------------------------------------------
+
+message AudioChunk {
+  string session_id = 1;
+  bytes data = 2;
+  bool is_final = 3;
+}
+
+// -- STT -------------------------------------------------------------------
+
+message TranscriptionResult {
+  string session_id = 1;
+  string text = 2;
+  bool is_partial = 3;
+  float confidence = 4;
+  string language = 5;
+  double start_time = 6;
+  double end_time = 7;
+  repeated WordTimestamp words = 8;
+}
+
+message WordTimestamp {
+  string word = 1;
+  double start = 2;
+  double end = 3;
+  float probability = 4;
+}
+
+// -- TTS -------------------------------------------------------------------
+
+message SynthesisRequest {
+  string session_id = 1;
+  string text = 2;
+  SessionConfig config = 3;  // optional: create session inline
+}
+
+message TextChunk {
+  string session_id = 1;
+  string text = 2;
+  bool is_final = 3;
+}

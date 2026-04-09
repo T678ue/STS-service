@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import urllib.request
 from pathlib import Path
-from typing import AsyncIterator
 
 import numpy as np
 import structlog

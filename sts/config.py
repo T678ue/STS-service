@@ -46,6 +46,8 @@ class ObservabilityConfig(BaseModel):
     log_format: str = "json"  # json | console
     metrics_port: int = 9090
     enable_metrics: bool = True
+    health_port: int = 8080
+    enable_health: bool = True
     enable_tracing: bool = False
     otlp_endpoint: str = "http://localhost:4317"
 

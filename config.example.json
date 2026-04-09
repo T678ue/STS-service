@@ -28,6 +28,8 @@
     "log_format": "json",
     "metrics_port": 9090,
     "enable_metrics": true,
+    "health_port": 8080,
+    "enable_health": true,
     "enable_tracing": false,
     "otlp_endpoint": "http://localhost:4317"
   },

@@ -3,7 +3,7 @@
 Bridges the audio pipeline (which produces speech segments) with the
 STT adapter (which transcribes them).  Manages the async flow of:
 
-    audio chunks → AudioPipeline → speech segments → STTAdapter → transcriptions
+    audio chunks -> AudioPipeline -> speech segments -> STTAdapter -> transcriptions
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import structlog
 
 from sts.audio.pipeline import AudioPipeline
 from sts.observability.metrics import stt_metrics
-from sts.session.models import SessionConfig, SessionState
+from sts.session.models import SessionState
 from sts.stt.base import STTAdapter, Transcription
 
 logger = structlog.get_logger(__name__)
@@ -40,6 +40,7 @@ class STTPipeline:
         self._stt = stt_adapter
         self._result_queue: asyncio.Queue[Transcription | None] = asyncio.Queue()
         self._transcription_tasks: set[asyncio.Task] = set()
+        self._closed = False
 
     async def feed_audio(self, raw_bytes: bytes) -> None:
         """Feed raw audio bytes from the transport layer.
@@ -47,6 +48,9 @@ class STTPipeline:
         Speech segments are detected by the audio pipeline and dispatched
         to the STT adapter asynchronously.
         """
+        if self._closed:
+            return
+
         self._session.audio_bytes_received += len(raw_bytes)
         segments = self._audio.process(raw_bytes)
 
@@ -96,16 +100,33 @@ class STTPipeline:
         segments = self._audio.flush()
         for segment in segments:
             await self._transcribe_segment(segment)
+
+        # Wait for any in-flight transcriptions to complete
+        if self._transcription_tasks:
+            await asyncio.gather(*self._transcription_tasks, return_exceptions=True)
+
         await self._result_queue.put(None)  # sentinel: stream is done
+
+    def close(self) -> None:
+        """Mark pipeline as closed.  Unblocks results() if it's waiting."""
+        self._closed = True
+        # Push sentinel so results() exits
+        try:
+            self._result_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
 
     async def results(self) -> AsyncIterator[Transcription]:
         """Async iterator of transcription results.
 
         Yields Transcription objects as they become available.
-        Terminates when flush() has been called and all segments processed.
+        Terminates when flush() or close() sends the None sentinel.
         """
         while True:
-            result = await self._result_queue.get()
+            try:
+                result = await self._result_queue.get()
+            except asyncio.CancelledError:
+                break
             if result is None:
                 break
             yield result

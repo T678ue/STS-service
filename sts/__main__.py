@@ -71,6 +71,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--log-format", default=None, choices=["json", "console"], help="Log output format")
     g.add_argument("--metrics-port", type=int, default=None, help="Prometheus metrics port")
     g.add_argument("--no-metrics", action="store_true", help="Disable Prometheus metrics")
+    g.add_argument("--health-port", type=int, default=None, help="Health check HTTP port (default: 8080)")
+    g.add_argument("--no-health", action="store_true", help="Disable health check endpoint")
     g.add_argument("--enable-tracing", action="store_true", help="Enable OpenTelemetry tracing")
     g.add_argument("--otlp-endpoint", default=None, help="OTLP collector endpoint")
 
@@ -140,6 +142,10 @@ def args_to_config(args: argparse.Namespace):
         config.observability.metrics_port = args.metrics_port
     if args.no_metrics:
         config.observability.enable_metrics = False
+    if args.health_port is not None:
+        config.observability.health_port = args.health_port
+    if args.no_health:
+        config.observability.enable_health = False
     if args.enable_tracing:
         config.observability.enable_tracing = True
     if args.otlp_endpoint is not None:
@@ -172,10 +178,15 @@ def main() -> None:
     asyncio.set_event_loop(loop)
 
     shutdown_event = asyncio.Event()
+    _stopped = False
 
     async def _shutdown():
-        shutdown_event.set()
+        nonlocal _stopped
+        if _stopped:
+            return
+        _stopped = True
         await server.stop()
+        shutdown_event.set()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, lambda: asyncio.ensure_future(_shutdown()))
@@ -184,9 +195,9 @@ def main() -> None:
         loop.run_until_complete(server.start())
         loop.run_until_complete(shutdown_event.wait())
     except KeyboardInterrupt:
-        pass
+        if not _stopped:
+            loop.run_until_complete(_shutdown())
     finally:
-        loop.run_until_complete(server.stop())
         loop.close()
 
 

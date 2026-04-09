@@ -46,12 +46,12 @@ COPY proto/ proto/
 # Create model cache directories
 RUN mkdir -p /var/lib/sts/piper-models /root/.cache/sts
 
-# Ports: WebSocket | gRPC | Prometheus metrics
-EXPOSE 8765 50051 9090
+# Ports: WebSocket | gRPC | Health | Prometheus metrics
+EXPOSE 8765 50051 8080 9090
 
-# Health check — hit the metrics endpoint
+# Health check — hit the dedicated /ready endpoint
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9090/')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready')" || exit 1
 
 # Container-specific paths and config
 ENV STS_CONFIG_PATH=""

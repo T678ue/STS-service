@@ -3,12 +3,12 @@
 Protocol:
   - Text frames: JSON control messages (session CRUD, TTS requests,
     transcription results, errors).
-  - Binary frames: audio data prefixed with a 17-byte header:
-      [1 byte: direction/type][16 bytes: session UUID hex]
+  - Binary frames: audio data prefixed with a header:
+      [1 byte: direction/type][32 bytes: session ID hex (zero-padded)]
 
 Audio direction bytes:
-  0x01 = audio input  (client → service, for STT)
-  0x02 = audio output (service → client, from TTS)
+  0x01 = audio input  (client -> service, for STT)
+  0x02 = audio output (service -> client, from TTS)
   0x03 = audio input final (last chunk from client)
   0x04 = audio output final (last chunk from service)
 """
@@ -17,12 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 from typing import TYPE_CHECKING
 
 import structlog
 import websockets
-from websockets.asyncio.server import ServerConnection
+import websockets.asyncio.server
 
 from sts.observability.metrics import transport_errors, ws_connections
 from sts.transport.base import ClientConnection, MessageHandler, Transport
@@ -33,23 +32,29 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Binary frame header constants
+# Binary frame header: 1 byte type + 32 bytes session id (hex, zero-padded)
 AUDIO_INPUT = 0x01
 AUDIO_OUTPUT = 0x02
 AUDIO_INPUT_FINAL = 0x03
 AUDIO_OUTPUT_FINAL = 0x04
-HEADER_SIZE = 17  # 1 byte type + 16 bytes session id (hex)
+SESSION_ID_LEN = 32
+HEADER_SIZE = 1 + SESSION_ID_LEN  # 33 bytes
 
 
 class WebSocketClientConnection(ClientConnection):
     """Wraps a websockets connection."""
 
-    def __init__(self, ws: ServerConnection) -> None:
+    def __init__(self, ws: websockets.asyncio.server.ServerConnection) -> None:
         self._ws = ws
+        # Sessions owned by this connection (for cleanup on disconnect)
+        self.session_ids: set[str] = set()
 
     async def send(self, msg: OutboundMessage) -> None:
         if msg.is_binary and msg.audio_data:
-            header = bytes([AUDIO_OUTPUT]) + msg.session_id[:16].encode().ljust(16, b"\0")
+            sid_bytes = msg.session_id.encode("ascii")[:SESSION_ID_LEN].ljust(
+                SESSION_ID_LEN, b"\0"
+            )
+            header = bytes([AUDIO_OUTPUT]) + sid_bytes
             await self._ws.send(header + msg.audio_data)
         else:
             payload = {
@@ -91,7 +96,7 @@ class WebSocketTransport(Transport):
 
     async def start(self, handler: MessageHandler) -> None:
         self._handler = handler
-        self._server = await websockets.serve(
+        self._server = await websockets.asyncio.server.serve(
             self._on_connection,
             self._host,
             self._port,
@@ -111,7 +116,9 @@ class WebSocketTransport(Transport):
             await self._server.wait_closed()
         logger.info("transport.websocket.stopped")
 
-    async def _on_connection(self, ws: ServerConnection) -> None:
+    async def _on_connection(
+        self, ws: websockets.asyncio.server.ServerConnection,
+    ) -> None:
         """Handle a single WebSocket connection lifecycle."""
         conn = WebSocketClientConnection(ws)
         ws_connections.inc()
@@ -123,6 +130,14 @@ class WebSocketTransport(Transport):
                     msg = self._decode(raw_message)
                     if msg and self._handler:
                         result = await self._handler(msg, conn)
+                        # Track sessions created on this connection
+                        if (
+                            result
+                            and not isinstance(result, list)
+                            and result.type == MessageType.SESSION_CREATED
+                        ):
+                            conn.session_ids.add(result.session_id)
+
                         if result:
                             if isinstance(result, list):
                                 for r in result:
@@ -147,6 +162,16 @@ class WebSocketTransport(Transport):
                 transport="websocket", error_type="connection"
             ).inc()
         finally:
+            # Destroy all sessions owned by this connection
+            if self._handler:
+                for sid in conn.session_ids:
+                    try:
+                        destroy_msg = InboundMessage(
+                            type=MessageType.SESSION_DESTROY, session_id=sid,
+                        )
+                        await self._handler(destroy_msg, conn)
+                    except Exception:
+                        logger.exception("ws.disconnect_cleanup_error", session_id=sid)
             ws_connections.dec()
             logger.info("ws.disconnected", remote=conn.remote_address)
 
@@ -159,7 +184,9 @@ class WebSocketTransport(Transport):
                 return None
 
             direction = raw[0]
-            session_id = raw[1:HEADER_SIZE].rstrip(b"\0").decode("ascii", errors="replace")
+            session_id = (
+                raw[1:HEADER_SIZE].rstrip(b"\0").decode("ascii", errors="replace")
+            )
             audio = raw[HEADER_SIZE:]
 
             if direction == AUDIO_INPUT_FINAL:

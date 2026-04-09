@@ -7,8 +7,9 @@ per-client sessions.  Thread-safe via asyncio locks.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -16,6 +17,8 @@ if TYPE_CHECKING:
     from sts.config import ServiceConfig
 
 from sts.session.models import SessionConfig, SessionMode, SessionState
+
+SessionCallback = Callable[[SessionState], Awaitable[Any]]
 
 logger = structlog.get_logger(__name__)
 
@@ -27,15 +30,8 @@ class SessionManager:
         self._lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task[None] | None = None
 
-        # Callbacks that transports / pipelines can register to react to
-        # session events.
-        self._on_create: list[asyncio.Future[None] | None] = []
-        self._on_update_callbacks: list[
-            callable  # type: ignore[valid-type]
-        ] = []
-        self._on_destroy_callbacks: list[
-            callable  # type: ignore[valid-type]
-        ] = []
+        self._on_update_callbacks: list[SessionCallback] = []
+        self._on_destroy_callbacks: list[SessionCallback] = []
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -150,10 +146,10 @@ class SessionManager:
     # Callbacks
     # ------------------------------------------------------------------
 
-    def on_update(self, callback) -> None:  # type: ignore[no-untyped-def]
+    def on_update(self, callback: SessionCallback) -> None:
         self._on_update_callbacks.append(callback)
 
-    def on_destroy(self, callback) -> None:  # type: ignore[no-untyped-def]
+    def on_destroy(self, callback: SessionCallback) -> None:
         self._on_destroy_callbacks.append(callback)
 
     async def _fire_update(self, state: SessionState) -> None:

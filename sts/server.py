@@ -41,6 +41,7 @@ class STSServer:
         self.config = config or ServiceConfig.from_env()
         self.sessions = SessionManager(self.config)
         self._transports: list = []
+        self._stopped = False
 
         # Per-session pipeline tracking
         self._stt_pipelines: dict[str, STTPipeline] = {}
@@ -100,18 +101,35 @@ class STSServer:
         for transport in self._transports:
             await transport.start(self._handle_message)
 
+        # 6. Signal readiness to health endpoint
+        from sts.observability.health import set_ready, set_status_fn
+
+        set_status_fn(self._health_status)
+        set_ready(True)
+
         logger.info(
             "server.started",
             transports=[t.name for t in self._transports],
         )
 
     async def stop(self) -> None:
-        """Graceful shutdown."""
+        """Graceful shutdown.  Idempotent — safe to call multiple times."""
+        if self._stopped:
+            return
+        self._stopped = True
+
+        from sts.observability.health import set_ready
+        set_ready(False)
+
         logger.info("server.stopping")
 
         # Stop transports first (no new connections)
         for transport in self._transports:
             await transport.stop()
+
+        # Close all STT pipelines so results() iterators exit
+        for pipeline in self._stt_pipelines.values():
+            pipeline.close()
 
         # Cancel result-forwarding tasks
         for task in self._result_tasks.values():
@@ -396,14 +414,28 @@ class STSServer:
     # Cleanup callbacks
     # ------------------------------------------------------------------
 
+    def _health_status(self) -> dict:
+        """Build status dict for /status health endpoint."""
+        return {
+            "active_sessions": self.sessions.active_count,
+            "stt_engines": STTRegistry.available(),
+            "tts_engines": TTSRegistry.available(),
+            "transports": [t.name for t in self._transports],
+            "stopped": self._stopped,
+        }
+
     async def _on_session_destroyed(self, state) -> None:
         """Clean up pipelines when a session is destroyed."""
         sid = state.session_id
+
+        # Close STT pipeline so results() unblocks
+        stt = self._stt_pipelines.pop(sid, None)
+        if stt:
+            stt.close()
 
         # Cancel transcription forwarding
         task = self._result_tasks.pop(sid, None)
         if task:
             task.cancel()
 
-        self._stt_pipelines.pop(sid, None)
         self._tts_pipelines.pop(sid, None)

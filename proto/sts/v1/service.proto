@@ -78,6 +78,9 @@ message STTConfig {
   string language = 3;
   int32 beam_size = 4;
   bool enable_partials = 5;
+  // Realtime streaming: re-transcribe in-progress speech periodically
+  bool enable_realtime_partials = 6;
+  int32 realtime_partial_interval_ms = 7;  // default 500
 }
 
 message TTSConfig {
@@ -154,6 +157,12 @@ message WordTimestamp {
   double start = 2;
   double end = 3;
   float probability = 4;
+}
+
+// VAD state change event — speech_start / speech_end
+message VADStateEvent {
+  string session_id = 1;
+  string event = 2;  // "speech_start" or "speech_end"
 }
 
 // -- TTS -------------------------------------------------------------------

@@ -14,7 +14,13 @@ from typing import AsyncIterator
 
 @dataclass(frozen=True, slots=True)
 class Transcription:
-    """A single transcription result."""
+    """A single transcription result.
+
+    Types of results:
+      - VAD event: text="", _vad_event="speech_start"|"speech_end"
+      - Partial: is_partial=True, text="what's been said so far..."
+      - Final: is_partial=False, text="complete utterance"
+    """
 
     text: str
     is_partial: bool = False     # True for interim/streaming results
@@ -24,6 +30,8 @@ class Transcription:
     end_time: float = 0.0
     # Per-word timestamps (if the model supports it)
     words: list[WordTimestamp] = field(default_factory=list)
+    # VAD event tag (speech_start, speech_end, or empty)
+    _vad_event: str = ""
 
 
 @dataclass(frozen=True, slots=True)

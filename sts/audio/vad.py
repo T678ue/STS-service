@@ -3,11 +3,18 @@
 Runs the Silero VAD model via onnxruntime — no PyTorch dependency.
 Provides a streaming-friendly interface that ingests fixed-size audio
 frames and emits speech segment boundaries.
+
+For realtime streaming, the VAD exposes:
+  - completed segments (speech that ended)
+  - the in-progress speech buffer (speech that's still ongoing)
+  - speech start/end events
 """
 
 from __future__ import annotations
 
+import enum
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +31,23 @@ _DEFAULT_CACHE = Path.home() / ".cache" / "sts" / "silero_vad.onnx"
 SAMPLE_RATE = 16_000
 # Valid window sizes for Silero: 512 (32ms), 1024 (64ms), 1536 (96ms)
 WINDOW_SAMPLES = 512  # 32 ms at 16 kHz
+
+
+class VADEvent(enum.Enum):
+    SPEECH_START = "speech_start"
+    SPEECH_END = "speech_end"
+
+
+@dataclass(slots=True)
+class VADResult:
+    """Result from a single process_chunk() call."""
+
+    completed_segments: list[np.ndarray]
+    events: list[VADEvent]
+    # True if there is an ongoing speech segment being accumulated
+    speech_active: bool
+    # Duration of the current in-progress speech (seconds), 0 if not speaking
+    speech_duration_s: float
 
 
 def _ensure_model(path: Path | None) -> Path:
@@ -99,14 +123,14 @@ class SileroVAD:
         output, self._h, self._c = self._session.run(None, ort_inputs)
         return float(output[0][0])
 
-    def process_chunk(self, audio: np.ndarray) -> list[np.ndarray]:
+    def process_chunk(self, audio: np.ndarray) -> VADResult:
         """Feed a chunk of float32 16 kHz mono audio.
 
-        Returns a (possibly empty) list of completed speech segments,
-        each a float32 ndarray.
+        Returns a VADResult with completed segments and speech events.
         """
         self._buffer = np.concatenate([self._buffer, audio])
         completed_segments: list[np.ndarray] = []
+        events: list[VADEvent] = []
 
         while len(self._buffer) >= WINDOW_SAMPLES:
             window = self._buffer[:WINDOW_SAMPLES]
@@ -121,6 +145,7 @@ class SileroVAD:
                     self._speech_samples = 0
                     self._silence_samples = 0
                     self._speech_buffer = []
+                    events.append(VADEvent.SPEECH_START)
 
                 self._speech_buffer.append(window)
                 self._speech_samples += WINDOW_SAMPLES
@@ -130,6 +155,7 @@ class SileroVAD:
                 if self._speech_samples >= self.max_speech_samples:
                     segment = np.concatenate(self._speech_buffer)
                     completed_segments.append(segment)
+                    events.append(VADEvent.SPEECH_END)
                     self._in_speech = False
                     self._speech_buffer = []
                     self._speech_samples = 0
@@ -144,13 +170,29 @@ class SileroVAD:
                         if self._speech_samples >= self.min_speech_samples:
                             segment = np.concatenate(self._speech_buffer)
                             completed_segments.append(segment)
-                        # else: too short, discard
+                        events.append(VADEvent.SPEECH_END)
                         self._in_speech = False
                         self._speech_buffer = []
                         self._speech_samples = 0
                         self._silence_samples = 0
 
-        return completed_segments
+        return VADResult(
+            completed_segments=completed_segments,
+            events=events,
+            speech_active=self._in_speech,
+            speech_duration_s=self._speech_samples / SAMPLE_RATE,
+        )
+
+    def get_speech_buffer(self) -> np.ndarray | None:
+        """Peek at the in-progress speech audio without consuming it.
+
+        Returns the accumulated speech buffer if currently in speech,
+        or None if silent.  Used by the STT pipeline for realtime
+        partial transcription while the user is still talking.
+        """
+        if not self._in_speech or not self._speech_buffer:
+            return None
+        return np.concatenate(self._speech_buffer)
 
     def flush(self) -> list[np.ndarray]:
         """Flush any remaining buffered speech (e.g. on stream end)."""

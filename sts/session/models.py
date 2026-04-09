@@ -49,6 +49,13 @@ class STTSessionConfig(BaseModel):
     beam_size: int = 5
     enable_partials: bool = True  # stream partial transcriptions
 
+    # Realtime streaming: re-transcribe the in-progress speech buffer
+    # periodically so the client sees text while the user is still talking.
+    enable_realtime_partials: bool = False
+    # How often to re-transcribe the growing buffer (ms).
+    # Lower = more responsive but more CPU.  500ms is a good default.
+    realtime_partial_interval_ms: int = 500
+
 
 # ---------------------------------------------------------------------------
 # TTS session overrides

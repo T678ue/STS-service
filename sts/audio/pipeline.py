@@ -3,6 +3,9 @@
 Orchestrates: decode → resample → mono → normalize → VAD
 Consumes raw audio chunks from the transport layer and produces
 clean speech segments ready for the STT engine.
+
+For realtime streaming, also exposes the in-progress speech buffer
+so the STT pipeline can periodically transcribe it for partial results.
 """
 
 from __future__ import annotations
@@ -16,12 +19,30 @@ from sts.audio.formats import decode_chunk
 from sts.audio.normalize import peak_normalize
 from sts.audio.resample import resample, to_mono
 from sts.audio.vad import SAMPLE_RATE as VAD_SAMPLE_RATE
-from sts.audio.vad import SileroVAD
+from sts.audio.vad import SileroVAD, VADEvent, VADResult
 
 if TYPE_CHECKING:
     from sts.session.models import SessionConfig
 
 logger = structlog.get_logger(__name__)
+
+
+class AudioPipelineResult:
+    """Result from processing an audio chunk."""
+
+    __slots__ = ("completed_segments", "vad_events", "speech_active", "speech_duration_s")
+
+    def __init__(
+        self,
+        completed_segments: list[np.ndarray],
+        vad_events: list[VADEvent],
+        speech_active: bool,
+        speech_duration_s: float,
+    ) -> None:
+        self.completed_segments = completed_segments
+        self.vad_events = vad_events
+        self.speech_active = speech_active
+        self.speech_duration_s = speech_duration_s
 
 
 class AudioPipeline:
@@ -62,37 +83,55 @@ class AudioPipeline:
             )
         self._config_version += 1
 
-    def process(self, raw_bytes: bytes) -> list[np.ndarray]:
-        """Process a raw audio chunk through the full pipeline.
-
-        Returns a (possibly empty) list of speech segments as float32
-        arrays at 16 kHz mono — ready for STT.
-        """
+    def _preprocess(self, raw_bytes: bytes) -> np.ndarray:
+        """Decode, resample, mono, normalize a raw audio chunk."""
         cfg = self._config
 
-        # 1. Decode to float32
         audio, sr = decode_chunk(
             raw_bytes,
             input_format=cfg.input_format.value,
             sample_rate=cfg.input_sample_rate,
             channels=cfg.input_channels,
         )
-
-        # 2. To mono
         audio = to_mono(audio)
-
-        # 3. Resample to internal rate (16 kHz for STT/VAD)
         audio = resample(audio, sr, VAD_SAMPLE_RATE)
-
-        # 4. Normalize
         audio = peak_normalize(audio)
+        return audio
 
-        # 5. VAD segmentation
+    def process(self, raw_bytes: bytes) -> AudioPipelineResult:
+        """Process a raw audio chunk through the full pipeline.
+
+        Returns an AudioPipelineResult with completed speech segments,
+        VAD events, and in-progress speech state.
+        """
+        audio = self._preprocess(raw_bytes)
+
         if self._vad:
-            return self._vad.process_chunk(audio)
+            vad_result = self._vad.process_chunk(audio)
+            return AudioPipelineResult(
+                completed_segments=vad_result.completed_segments,
+                vad_events=vad_result.events,
+                speech_active=vad_result.speech_active,
+                speech_duration_s=vad_result.speech_duration_s,
+            )
 
         # No VAD — return the whole chunk as a single "segment"
-        return [audio]
+        return AudioPipelineResult(
+            completed_segments=[audio],
+            vad_events=[],
+            speech_active=False,
+            speech_duration_s=0.0,
+        )
+
+    def get_speech_buffer(self) -> np.ndarray | None:
+        """Get the in-progress speech audio for realtime partial transcription.
+
+        Returns the accumulated speech buffer if VAD detects ongoing speech,
+        or None if silent.  Does NOT consume the buffer.
+        """
+        if self._vad:
+            return self._vad.get_speech_buffer()
+        return None
 
     def flush(self) -> list[np.ndarray]:
         """Flush remaining audio on stream end."""

@@ -246,6 +246,16 @@ class STSServer:
         """Background task: read STT results and send to client."""
         try:
             async for transcription in pipeline.results():
+                # VAD events get their own message type
+                if transcription._vad_event:
+                    msg = OutboundMessage(
+                        type=MessageType.STT_VAD_STATE,
+                        session_id=session_id,
+                        payload={"event": transcription._vad_event},
+                    )
+                    await conn.send(msg)
+                    continue
+
                 msg = OutboundMessage(
                     type=MessageType.STT_TRANSCRIPTION,
                     session_id=session_id,
